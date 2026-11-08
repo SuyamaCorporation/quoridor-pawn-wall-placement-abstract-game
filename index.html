@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>コリドール (Quoridor)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-4">
+<div class="max-w-2xl mx-auto">
+  <h1 class="text-2xl font-bold text-center text-amber-400 mb-1">コリドール (Quoridor)</h1>
+  <p class="text-center text-gray-400 text-sm mb-4">2人用ボードゲーム — ゴールへの最短経路を切り開け</p>
+
+  <div class="flex justify-between items-center mb-3 bg-gray-800 rounded-xl p-3">
+    <div class="text-center" id="p1-info">
+      <div class="text-blue-400 font-bold">プレイヤー1 (青)</div>
+      <div class="text-sm text-gray-400">壁: <span id="p1-walls">10</span>枚</div>
+      <div class="text-xs text-gray-500">↑ 上段がゴール</div>
+    </div>
+    <div class="text-center">
+      <div class="text-lg font-bold" id="turn-label">プレイヤー1のターン</div>
+      <div class="text-sm text-gray-400" id="mode-label">モード: ポーン移動</div>
+      <div class="flex gap-2 mt-1">
+        <button onclick="setMode('pawn')" id="btn-pawn" class="text-xs px-2 py-1 rounded bg-blue-600 text-white" aria-label="ポーン移動モード">ポーン</button>
+        <button onclick="setMode('wall')" id="btn-wall" class="text-xs px-2 py-1 rounded bg-gray-600 text-white" aria-label="壁配置モード">壁</button>
+        <button onclick="toggleHint()" id="btn-hint" class="text-xs px-2 py-1 rounded bg-gray-600 text-white" aria-label="ヒント表示">ヒント</button>
+      </div>
+    </div>
+    <div class="text-center" id="p2-info">
+      <div class="text-red-400 font-bold">プレイヤー2 (赤)</div>
+      <div class="text-sm text-gray-400">壁: <span id="p2-walls">10</span>枚</div>
+      <div class="text-xs text-gray-500">↓ 下段がゴール</div>
+    </div>
+  </div>
+
+  <div class="flex justify-center">
+    <canvas id="board" width="500" height="500" role="img" aria-label="コリドールボード" class="rounded-xl cursor-pointer"></canvas>
+  </div>
+
+  <div id="wall-orient" class="mt-3 flex justify-center gap-3 hidden">
+    <button onclick="setWallOrient('H')" id="btn-h" class="px-4 py-2 rounded bg-amber-600 text-white text-sm font-semibold" aria-label="水平壁">水平壁 (H)</button>
+    <button onclick="setWallOrient('V')" id="btn-v" class="px-4 py-2 rounded bg-gray-600 text-white text-sm font-semibold" aria-label="垂直壁">垂直壁 (V)</button>
+  </div>
+
+  <div class="mt-3 bg-gray-800 rounded-xl p-3">
+    <div id="message" class="text-center text-sm text-gray-300">ポーンをクリックして移動先を選んでください</div>
+  </div>
+
+  <button onclick="initGame()" class="mt-3 w-full bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 rounded-lg transition" aria-label="ゲームリセット">
+    リセット
+  </button>
+</div>
+
+<script>
+const N = 9;
+const CELL = 44;
+const GAP = 8;
+const OFFSET = 20;
+const BOARD_SIZE = N * CELL + (N - 1) * GAP + OFFSET * 2;
+
+let state = {};
+let mode = 'pawn';
+let wallOrient = 'H';
+let showHint = false;
+let selectedPawn = false;
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+
+function initGame() {
+  state = {
+    pawns: [{ r: 8, c: 4 }, { r: 0, c: 4 }],
+    walls: [], // {r, c, orient: H|V}
+    wallsLeft: [10, 10],
+    turn: 0,
+    winner: null,
+  };
+  mode = 'pawn';
+  selectedPawn = false;
+  showHint = false;
+  updateUI();
+  drawBoard();
+}
+
+function cellToXY(r, c) {
+  return {
+    x: OFFSET + c * (CELL + GAP),
+    y: OFFSET + r * (CELL + GAP),
+  };
+}
+
+function xyToCell(px, py) {
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const { x, y } = cellToXY(r, c);
+      if (px >= x && px <= x + CELL && py >= y && py <= y + CELL) return { r, c };
+    }
+  }
+  return null;
+}
+
+function xyToWall(px, py) {
+  for (let r = 0; r < N - 1; r++) {
+    for (let c = 0; c < N - 1; c++) {
+      const { x, y } = cellToXY(r, c);
+      if (wallOrient === 'H') {
+        const wx = x, wy = y + CELL;
+        if (px >= wx && px <= wx + CELL * 2 + GAP && py >= wy && py <= wy + GAP)
+          return { r, c, orient: 'H' };
+      } else {
+        const wx = x + CELL, wy = y;
+        if (px >= wx && px <= wx + GAP && py >= wy && py <= wy + CELL * 2 + GAP)
+          return { r, c, orient: 'V' };
+      }
+    }
+  }
+  return null;
+}
+
+function hasWall(r, c, orient, walls) {
+  return walls.some(w => w.orient === orient &&
+    ((w.r === r && w.c === c) || (orient === 'H' && w.r === r && w.c === c - 1) || (orient === 'V' && w.r === r - 1 && w.c === c)));
+}
+
+function wallBlocksMove(r1, c1, r2, c2, walls) {
+  const dr = r2 - r1, dc = c2 - c1;
+  if (dr === -1 && dc === 0) return walls.some(w => w.orient === 'H' && w.r === r1 - 1 && (w.c === c1 || w.c === c1 - 1));
+  if (dr === 1 && dc === 0) return walls.some(w => w.orient === 'H' && w.r === r1 && (w.c === c1 || w.c === c1 - 1));
+  if (dr === 0 && dc === -1) return walls.some(w => w.orient === 'V' && w.c === c1 - 1 && (w.r === r1 || w.r === r1 - 1));
+  if (dr === 0 && dc === 1) return walls.some(w => w.orient === 'V' && w.c === c1 && (w.r === r1 || w.r === r1 - 1));
+  return false;
+}
+
+function getValidMoves(pIdx, walls, pawns) {
+  const { r, c } = pawns[pIdx];
+  const opp = pawns[1 - pIdx];
+  const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  const moves = [];
+  for (const [dr, dc] of dirs) {
+    const nr = r + dr, nc = c + dc;
+    if (nr < 0 || nr >= N || nc < 0 || nc >= N) continue;
+    if (wallBlocksMove(r, c, nr, nc, walls)) continue;
+    if (nr === opp.r && nc === opp.c) {
+      const jr = nr + dr, jc = nc + dc;
+      if (jr >= 0 && jr < N && jc >= 0 && jc < N && !wallBlocksMove(nr, nc, jr, jc, walls))
+        moves.push({ r: jr, c: jc });
+      else {
+        for (const [sdr, sdc] of dirs) {
+          if (sdr === -dr && sdc === -dc) continue;
+          const sr = nr + sdr, sc = nc + sdc;
+          if (sr >= 0 && sr < N && sc >= 0 && sc < N && !wallBlocksMove(nr, nc, sr, sc, walls))
+            moves.push({ r: sr, c: sc });
+        }
+      }
+    } else {
+      moves.push({ r: nr, c: nc });
+    }
+  }
+  return moves;
+}
+
+function bfs(pIdx, walls, pawns) {
+  const goal = pIdx === 0 ? 0 : 8;
+  const start = pawns[pIdx];
+  const visited = Array.from({ length: N }, () => Array(N).fill(false));
+  const queue = [{ r: start.r, c: start.c, path: [] }];
+  visited[start.r][start.c] = true;
+  while (queue.length > 0) {
+    const { r, c, path } = queue.shift();
+    if (r === goal) return path;
+    const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    for (const [dr, dc] of dirs) {
+      const nr = r + dr, nc = c + dc;
+      if (nr < 0 || nr >= N || nc < 0 || nc >= N) continue;
+      if (wallBlocksMove(r, c, nr, nc, walls)) continue;
+      if (!visited[nr][nc]) {
+        visited[nr][nc] = true;
+        queue.push({ r: nr, c: nc, path: [...path, { r: nr, c: nc }] });
+      }
+    }
+  }
+  return null;
+}
+
+function canReachGoal(pIdx, walls, pawns) {
+  return bfs(pIdx, walls, pawns) !== null;
+}
+
+function wallOverlaps(w, walls) {
+  for (const ew of walls) {
+    if (ew.orient !== w.orient) continue;
+    if (w.orient === 'H') {
+      if (ew.r === w.r && (ew.c === w.c || ew.c === w.c - 1 || ew.c === w.c + 1)) return true;
+    } else {
+      if (ew.c === w.c && (ew.r === w.r || ew.r === w.r - 1 || ew.r === w.r + 1)) return true;
+    }
+  }
+  return false;
+}
+
+function drawBoard() {
+  const { pawns, walls } = state;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Background
+  ctx.fillStyle = '#1f2937';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Hint paths
+  let hintCells = new Set();
+  if (showHint && !state.winner) {
+    const path = bfs(state.turn, walls, pawns);
+    if (path) path.forEach(({ r, c }) => hintCells.add(`${r},${c}`));
+  }
+
+  // Valid moves
+  let validMoves = new Set();
+  if (mode === 'pawn' && !state.winner) {
+    const moves = getValidMoves(state.turn, walls, pawns);
+    moves.forEach(({ r, c }) => validMoves.add(`${r},${c}`));
+  }
+
+  // Cells
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const { x, y } = cellToXY(r, c);
+      const key = `${r},${c}`;
+      let bg = '#374151';
+      if (hintCells.has(key)) bg = '#a78bfa33';
+      if (validMoves.has(key)) bg = '#6366f133';
+      ctx.fillStyle = bg;
+      ctx.beginPath();
+      ctx.roundRect(x, y, CELL, CELL, 4);
+      ctx.fill();
+    }
+  }
+
+  // Goal rows
+  const goalStyles = ['#3b82f633', '#ef444433'];
+  [0, 1].forEach((pIdx) => {
+    const goalRow = pIdx === 0 ? 0 : 8;
+    for (let c = 0; c < N; c++) {
+      const { x, y } = cellToXY(goalRow, c);
+      ctx.fillStyle = goalStyles[pIdx];
+      ctx.beginPath();
+      ctx.roundRect(x, y, CELL, CELL, 4);
+      ctx.fill();
+    }
+  });
+
+  // Walls
+  walls.forEach(w => {
+    const { x, y } = cellToXY(w.r, w.c);
+    ctx.fillStyle = '#f59e0b';
+    if (w.orient === 'H') {
+      ctx.fillRect(x, y + CELL, CELL * 2 + GAP, GAP);
+    } else {
+      ctx.fillRect(x + CELL, y, GAP, CELL * 2 + GAP);
+    }
+  });
+
+  // Pawns
+  const pawnColors = ['#60a5fa', '#f87171'];
+  const pawnShadows = ['#3b82f6', '#ef4444'];
+  pawns.forEach((p, i) => {
+    const { x, y } = cellToXY(p.r, p.c);
+    const cx = x + CELL / 2, cy = y + CELL / 2;
+    ctx.shadowColor = pawnShadows[i];
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = pawnColors[i];
+    ctx.beginPath();
+    ctx.arc(cx, cy, CELL / 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(i + 1, cx, cy);
+  });
+
+  // Winner banner
+  if (state.winner !== null) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 180, canvas.width, 140);
+    ctx.fillStyle = state.winner === 0 ? '#60a5fa' : '#f87171';
+    ctx.font = 'bold 36px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`プレイヤー${state.winner + 1} 勝利！`, canvas.width / 2, 250);
+  }
+}
+
+function handleClick(e) {
+  if (state.winner !== null) return;
+  const rect = canvas.getBoundingClientRect();
+  const scale = canvas.width / rect.width;
+  const px = (e.clientX - rect.left) * scale;
+  const py = (e.clientY - rect.top) * scale;
+
+  if (mode === 'pawn') {
+    const cell = xyToCell(px, py);
+    if (!cell) return;
+    const moves = getValidMoves(state.turn, state.walls, state.pawns);
+    const isValid = moves.some(m => m.r === cell.r && m.c === cell.c);
+    if (isValid) {
+      state.pawns[state.turn] = { r: cell.r, c: cell.c };
+      const goal = state.turn === 0 ? 0 : 8;
+      if (cell.r === goal) { state.winner = state.turn; }
+      else { state.turn = 1 - state.turn; }
+      updateUI();
+      drawBoard();
+    }
+  } else {
+    const w = xyToWall(px, py);
+    if (!w) return;
+    if (state.wallsLeft[state.turn] <= 0) {
+      setMessage('壁がありません！'); return;
+    }
+    if (w.r >= N - 1 || w.c >= N - 1) return;
+    if (wallOverlaps(w, state.walls)) { setMessage('その位置には壁を置けません。'); return; }
+    const testWalls = [...state.walls, w];
+    if (!canReachGoal(0, testWalls, state.pawns) || !canReachGoal(1, testWalls, state.pawns)) {
+      setMessage('この壁はゴールへの経路を完全に遮断します！'); return;
+    }
+    state.walls.push(w);
+    state.wallsLeft[state.turn]--;
+    state.turn = 1 - state.turn;
+    updateUI();
+    drawBoard();
+  }
+}
+
+function setMode(m) {
+  mode = m;
+  document.getElementById('btn-pawn').className = `text-xs px-2 py-1 rounded ${m === 'pawn' ? 'bg-blue-600' : 'bg-gray-600'} text-white`;
+  document.getElementById('btn-wall').className = `text-xs px-2 py-1 rounded ${m === 'wall' ? 'bg-amber-600' : 'bg-gray-600'} text-white`;
+  document.getElementById('wall-orient').className = m === 'wall' ? 'mt-3 flex justify-center gap-3' : 'mt-3 flex justify-center gap-3 hidden';
+  document.getElementById('mode-label').textContent = `モード: ${m === 'pawn' ? 'ポーン移動' : '壁配置'}`;
+  drawBoard();
+}
+
+function setWallOrient(o) {
+  wallOrient = o;
+  document.getElementById('btn-h').className = `px-4 py-2 rounded ${o === 'H' ? 'bg-amber-600' : 'bg-gray-600'} text-white text-sm font-semibold`;
+  document.getElementById('btn-v').className = `px-4 py-2 rounded ${o === 'V' ? 'bg-amber-600' : 'bg-gray-600'} text-white text-sm font-semibold`;
+}
+
+function toggleHint() {
+  showHint = !showHint;
+  document.getElementById('btn-hint').className = `text-xs px-2 py-1 rounded ${showHint ? 'bg-green-600' : 'bg-gray-600'} text-white`;
+  drawBoard();
+}
+
+function setMessage(msg) {
+  document.getElementById('message').textContent = msg;
+}
+
+function updateUI() {
+  document.getElementById('p1-walls').textContent = state.wallsLeft[0];
+  document.getElementById('p2-walls').textContent = state.wallsLeft[1];
+  if (state.winner !== null) {
+    document.getElementById('turn-label').textContent = `プレイヤー${state.winner + 1} 勝利！`;
+    document.getElementById('message').textContent = 'リセットボタンで新しいゲームを始めましょう。';
+  } else {
+    const color = state.turn === 0 ? 'text-blue-400' : 'text-red-400';
+    document.getElementById('turn-label').className = `text-lg font-bold ${color}`;
+    document.getElementById('turn-label').textContent = `プレイヤー${state.turn + 1}のターン`;
+    document.getElementById('message').textContent = mode === 'pawn' ? '移動先のマスをクリック' : '壁を置く位置をクリック';
+  }
+}
+
+canvas.addEventListener('click', handleClick);
+canvas.addEventListener('mousemove', (e) => {
+  if (mode !== 'wall' || state.winner !== null) return;
+  const rect = canvas.getBoundingClientRect();
+  const scale = canvas.width / rect.width;
+  const px = (e.clientX - rect.left) * scale;
+  const py = (e.clientY - rect.top) * scale;
+  drawBoard();
+  const w = xyToWall(px, py);
+  if (w && w.r < N - 1 && w.c < N - 1) {
+    const { x, y } = cellToXY(w.r, w.c);
+    ctx.fillStyle = '#f59e0b88';
+    if (w.orient === 'H') ctx.fillRect(x, y + CELL, CELL * 2 + GAP, GAP);
+    else ctx.fillRect(x + CELL, y, GAP, CELL * 2 + GAP);
+  }
+});
+
+initGame();
+</script>
+</body>
+</html>
